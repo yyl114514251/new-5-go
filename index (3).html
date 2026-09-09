@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>wuziqi | an ancient Chinese game</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: system-ui, sans-serif;
+        }
+        body {
+            padding: 30px;
+        }
+        h1 {
+            font-size: 32px;
+            font-weight: 500;
+            margin-bottom: 4px;
+        }
+        .subtitle {
+            color:#666;
+            margin-bottom:24px;
+        }
+        .container{
+            display:flex;
+            gap:30px;
+            align-items:flex-start;
+        }
+        #boardCanvas{
+            border: 1px solid #aaa;
+        }
+        .control{
+            padding:16px;
+            background:#f6f6f6;
+            border-radius:10px;
+            min-width:240px;
+        }
+        button{
+            padding:8px 16px;
+            margin:4px;
+            cursor:pointer;
+        }
+        #status{
+            margin:12px 0;
+            font-size:16px;
+        }
+    </style>
+</head>
+<body>
+    <h1>wuziqi</h1>
+    <div class="subtitle">an ancient Chinese game</div>
+    <div class="container">
+        <canvas id="boardCanvas"></canvas>
+        <div class="control">
+            <button id="restart">重新开局</button>
+            <button id="undo">悔棋</button>
+            <div id="status">黑棋，请点击棋盘落子</div>
+            <div>难度：
+                <select id="level">
+                    <option value="1">简单</option>
+                    <option value="2" selected>中等</option>
+                    <option value="3">困难</option>
+                </select>
+            </div>
+        </div>
+    </div>
+
+<script>
+// 等DOM完全加载完毕，再执行所有逻辑（解决最常见空白问题！）
+document.addEventListener('DOMContentLoaded', function() {
+    const BOARD_SIZE = 15;
+    const CELL_SIZE = 40;
+    const PADDING = 20;
+
+    const canvas = document.getElementById("boardCanvas");
+    const ctx = canvas.getContext("2d");
+    canvas.width = CELL_SIZE * (BOARD_SIZE - 1) + PADDING * 2;
+    canvas.height = CELL_SIZE * (BOARD_SIZE - 1) + PADDING * 2;
+
+    const EMPTY = 0;
+    const BLACK = 1;
+    const WHITE = 2;
+
+    let board = [];
+    let history = [];
+    let gameOver = false;
+    let aiDepth = 2;
+
+    const statusDom = document.getElementById("status");
+    const levelSelect = document.getElementById("level");
+    const restartBtn = document.getElementById("restart");
+    const undoBtn = document.getElementById("undo");
+
+    // 初始化空棋盘
+    function initBoard() {
+        board = Array(BOARD_SIZE).fill().map(() => Array(BOARD_SIZE).fill(EMPTY));
+        history = [];
+        gameOver = false;
+        statusDom.textContent = "黑棋，请点击棋盘落子";
+        drawBoard();
+    }
+
+    // 绘制棋盘
+    function drawBoard() {
+        // 背景
+        ctx.fillStyle = "#DEB887";
+        ctx.fillRect(0,0,canvas.width, canvas.height);
+
+        // 网格线
+        ctx.strokeStyle = "#222";
+        ctx.lineWidth = 1;
+        for(let i=0; i<BOARD_SIZE; i++){
+            //横线
+            ctx.beginPath();
+            ctx.moveTo(PADDING, PADDING + i * CELL_SIZE);
+            ctx.lineTo(PADDING + CELL_SIZE*(BOARD_SIZE-1), PADDING + i * CELL_SIZE);
+            ctx.stroke();
+            //竖线
+            ctx.beginPath();
+            ctx.moveTo(PADDING + i * CELL_SIZE, PADDING);
+            ctx.lineTo(PADDING + i * CELL_SIZE, PADDING + CELL_SIZE*(BOARD_SIZE-1));
+            ctx.stroke();
+        }
+
+        // 天元、星位点
+        const starPoints = [
+            [3,3], [3,7], [3,11],
+            [7,3], [7,7], [7,11],
+            [11,3], [11,7], [11,11]
+        ];
+        ctx.fillStyle="#222";
+        starPoints.forEach(([x,y])=>{
+            ctx.beginPath();
+            ctx.arc(PADDING + x*CELL_SIZE, PADDING + y*CELL_SIZE, 4, 0, Math.PI*2);
+            ctx.fill();
+        })
+
+        // 绘制棋子
+        for(let y=0;y<BOARD_SIZE;y++){
+            for(let x=0;x<BOARD_SIZE;x++){
+                const p = board[y][x];
+                if(p === EMPTY) continue;
+                ctx.beginPath();
+                ctx.arc(PADDING + x*CELL_SIZE, PADDING + y*CELL_SIZE, CELL_SIZE*0.4, 0, Math.PI*2);
+                if(p === BLACK){
+                    ctx.fillStyle="#000000";
+                }else{
+                    ctx.fillStyle="#ffffff";
+                }
+                ctx.fill();
+                if(p === WHITE){
+                    ctx.strokeStyle="#777";
+                    ctx.lineWidth=1;
+                    ctx.stroke();
+                }
+            }
+        }
+    }
+
+    // 判断胜负：落子(x,y)的player是否连成5子
+    function checkWin(x,y,player){
+        const dirs = [ [1,0], [0,1], [1,1], [1,-1] ];
+        for(let [dx,dy] of dirs){
+            let count = 1;
+            //正向
+            for(let i=1;i<5;i++){
+                let nx = x + dx*i;
+                let ny = y + dy*i;
+                if(nx<0 || nx>=BOARD_SIZE || ny<0 || ny>=BOARD_SIZE || board[ny][nx]!==player) break;
+                count++;
+            }
+            //反向
+            for(let i=1;i<5;i++){
+                let nx = x - dx*i;
+                let ny = y - dy*i;
+                if(nx<0 || nx>=BOARD_SIZE || ny<0 || ny>=BOARD_SIZE || board[ny][nx]!==player) break;
+                count++;
+            }
+            if(count >=5) return true;
+        }
+        return false;
+    }
+
+    // 落子
+    function placeStone(x,y,player){
+        board[y][x] = player;
+        history.push({x,y,player});
+        drawBoard();
+    }
+
+    // AI评估单个位置
+    function getScore(b, x, y, p){
+        const dirs = [ [1,0], [0,1], [1,1], [1,-1] ];
+        let total = 0;
+        for(let [dx,dy] of dirs){
+            let same = 1;
+            let leftBlock = false;
+            let rightBlock = false;
+            for(let i=1;i<=4;i++){
+                const nx = x - dx*i;
+                const ny = y - dy*i;
+                if(nx<0||ny<0){ leftBlock=true; break; }
+                if(b[ny][nx] === p) same++;
+                else if(b[ny][nx] === EMPTY) continue;
+                else { leftBlock=true; break; }
+            }
+            for(let i=1;i<=4;i++){
+                const nx = x + dx*i;
+                const ny = y + dy*i;
+                if(nx<0||ny<0){ rightBlock=true; break; }
+                if(b[ny][nx] === p) same++;
+                else if(b[ny][nx] === EMPTY) continue;
+                else { rightBlock=true; break; }
+            }
+            if(same >=5) total += 100000;
+            else if(same ===4){
+                if(!leftBlock && !rightBlock) total += 10000;
+                else total +=1000;
+            }else if(same ===3){
+                if(!leftBlock && !rightBlock) total += 500;
+                else total += 100;
+            }else if(same ===2){
+                if(!leftBlock && !rightBlock) total += 50;
+                else total +=10;
+            }
+        }
+        return total;
+    }
+
+    // 评估整个棋盘
+    function evaluateBoard(b){
+        let score = 0;
+        for(let y=0;y<BOARD_SIZE;y++){
+            for(let x=0;x<BOARD_SIZE;x++){
+                const p = b[y][x];
+                if(p===EMPTY) continue;
+                const s = getScore(b,x,y,p);
+                if(p === WHITE) score += s;
+                else score -= s;
+            }
+        }
+        return score;
+    }
+
+    // 生成候选落子点（只取棋子周围2格，大幅减少计算量）
+    function getCandidateMoves(b){
+        const moves = new Set();
+        for(let y=0;y<BOARD_SIZE;y++){
+            for(let x=0;x<BOARD_SIZE;x++){
+                if(b[y][x] !== EMPTY){
+                    for(let dy=-2;dy<=2;dy++){
+                        for(let dx=-2;dx<=2;dx++){
+                            const nx = x+dx;
+                            const ny = y+dy;
+                            if(nx>=0 && nx<BOARD_SIZE && ny>=0 && ny<BOARD_SIZE && b[ny][nx] === EMPTY){
+                                moves.add(nx + "," + ny);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        const list = Array.from(moves).map(str=>{
+            const [x,y] = str.split(',').map(Number);
+            return {x,y};
+        })
+        return list;
+    }
+
+    // 简易AlphaBeta剪枝AI
+    function alphaBeta(b, depth, alpha, beta, isMaxPlayer){
+        if(depth === 0) return evaluateBoard(b);
+        const moves = getCandidateMoves(b);
+        if(moves.length ===0) return evaluateBoard(b);
+
+        if(isMaxPlayer){
+            let bestVal = -Infinity;
+            for(let m of moves){
+                b[m.y][m.x] = WHITE;
+                if(checkWin(m.x,m.y,WHITE)){
+                    b[m.y][m.x] = EMPTY;
+                    return 999999;
+                }
+                const val = alphaBeta(b, depth-1, alpha, beta, false);
+                b[m.y][m.x] = EMPTY;
+                bestVal = Math.max(bestVal, val);
+                alpha = Math.max(alpha,bestVal);
+                if(alpha >= beta) break;
+            }
+            return bestVal;
+        }else{
+            let bestVal = Infinity;
+            for(let m of moves){
+                b[m.y][m.x] = BLACK;
+                if(checkWin(m.x,m.y,BLACK)){
+                    b[m.y][m.x] = EMPTY;
+                    return -999999;
+                }
+                const val = alphaBeta(b, depth-1, alpha, beta, true);
+                b[m.y][m.x] = EMPTY;
+                bestVal = Math.min(bestVal, val);
+                beta = Math.min(beta, bestVal);
+                if(alpha >= beta) break;
+            }
+            return bestVal;
+        }
+    }
+
+    // AI搜索最优落子
+    function aiThink(){
+        let bestMove = null;
+        let bestScore = -Infinity;
+        const moves = getCandidateMoves(board);
+        for(let m of moves){
+            board[m.y][m.x] = WHITE;
+            if(checkWin(m.x,m.y,WHITE)){
+                board[m.y][m.x] = EMPTY;
+                return m;
+            }
+            const s = alphaBeta(board, aiDepth-1, -Infinity, Infinity, false);
+            board[m.y][m.x] = EMPTY;
+            if(s > bestScore){
+                bestScore = s;
+                bestMove = m;
+            }
+        }
+        return bestMove;
+    }
+
+    // 画布点击事件
+    canvas.onclick = function(e){
+        if(gameOver) return;
+        const rect = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        const x = Math.round((mx - PADDING)/CELL_SIZE);
+        const y = Math.round((my - PADDING)/CELL_SIZE);
+        if(x<0 || x>=BOARD_SIZE || y<0 || y>=BOARD_SIZE || board[y][x]!==EMPTY) return;
+
+        // 黑棋落子（玩家）
+        placeStone(x,y,BLACK);
+        if(checkWin(x,y,BLACK)){
+            gameOver=true;
+            statusDom.textContent = "🎉 黑棋胜利！";
+            return;
+        }
+        statusDom.textContent = "AI思考中...";
+
+        // AI白棋落子
+        setTimeout(()=>{
+            const aiMove = aiThink();
+            if(!aiMove){
+                statusDom.textContent = "棋盘已满，平局";
+                gameOver=true;
+                return;
+            }
+            placeStone(aiMove.x, aiMove.y, WHITE);
+            if(checkWin(aiMove.x, aiMove.y, WHITE)){
+                gameOver=true;
+                statusDom.textContent = "😔 AI白棋胜利！";
+            }else{
+                statusDom.textContent = "轮到黑棋落子";
+            }
+        }, 50);
+    }
+
+    // 按钮事件
+    restartBtn.onclick = initBoard;
+    undoBtn.onclick = function(){
+        if(history.length <2 || gameOver) return;
+        history.pop();
+        history.pop();
+        // 重置棋盘
+        board = Array(BOARD_SIZE).fill().map(()=>Array(BOARD_SIZE).fill(EMPTY));
+        history.forEach(item=>{
+            board[item.y][item.x] = item.player;
+        })
+        gameOver = false;
+        statusDom.textContent = "轮到黑棋落子";
+        drawBoard();
+    }
+    levelSelect.onchange = function(){
+        const lv = parseInt(this.value);
+        if(lv===1) aiDepth=1;
+        else if(lv===2) aiDepth=2;
+        else aiDepth=3;
+    }
+
+    // 启动游戏
+    initBoard();
+})
+</script>
+</body>
+</html>
